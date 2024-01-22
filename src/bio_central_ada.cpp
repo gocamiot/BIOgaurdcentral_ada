@@ -11,11 +11,15 @@ and a peripheral that has a relay and a button.
 #include <Adafruit_NeoPixel.h>
 #include <Wire.h>
 #include <ArduinoJson.h>
+#include <Adafruit_Fingerprint.h>
 
 //list functions
 void connect_callback(uint16_t conn_handle);
 void disconnect_callback(uint16_t conn_handle, uint8_t reason);
+void pher_connect_callback(uint16_t conn_handle); //this is advertised from central to connect to
+void pher_disconnect_callback(uint16_t conn_handle, uint8_t reason);
 void setLED(bool on, String clr);
+void pulseLED(int times, String color);
 void switchMachine(int on);
 void startAdv(void);
 void blink_timer_callback(TimerHandle_t xTimerID);
@@ -23,6 +27,9 @@ void bleuart_rx_callback(BLEClientUart& uart_svc);
 void sendAll(const char* str);
 void scan_callback(ble_gap_evt_adv_report_t* report);
 int findConnHandle(uint16_t conn_handle);
+int getFingerprintID();
+uint8_t getFingerprintIDez();
+
 
 
 // max concurrent connections supported by this example
@@ -32,34 +39,60 @@ uint8_t connection_count = 0;
 #define VBATPIN A1
 
 //tag_name must be unique for every tag
+//centrals will be even numbers, its tag will be this number -1
 char tag_name[8] = "b0002";
 const char ADVERTISING_NAME_PREFIX[] = "b0002";
 char tag_ver[30] = "BIOgaurd central 240110";
 
 // Service UUID used to differentiate this device. Note that the byte order is reversed.
 // The UUID below corresponds to 0a7c96c1-a53f-40ad-93bc-6aaa8fb4f607
+// const uint8_t TAG_UUID_SERVICE[] =
+//   {
+//     0x07, 0xf6, 0xb4, 0x8f, 0xaa, 0x6a, 0xbc, 0x93,
+//     0xad, 0x40, 0x16, 0x3f, 0xa5, 0xc1, 0x96, 0x7c
+//   };
+
+//these are services that we find on client side
 const uint8_t TAG_UUID_SERVICE[] =
   {
-    0x07, 0xf6, 0xb4, 0x8f, 0xaa, 0x6a, 0xbc, 0x93,
-    0xad, 0x40, 0x16, 0x3f, 0xa5, 0xc1, 0x96, 0x7c
+    0x48, 0x2b, 0xdf, 0x9f, 0x2f, 0x2c, 0xd7, 0x9d,
+    0x03, 0x41, 0x16, 0x7d, 0xb3, 0x7f, 0xee, 0x5a
+  }; 
+
+const uint8_t TAG_UUID_CHR_SWITCH[] =
+  {
+    0x48, 0x2b, 0xdf, 0x9f, 0x2f, 0x2c, 0xd7, 0x9d,
+    0x03, 0x41, 0x16, 0x7d, 0xb5, 0x7f, 0xee, 0x5a
   };
 
 const uint8_t TAG_UUID_CHR_BUTTON[] =
   {
-    0x07, 0xf6, 0xb4, 0x8f, 0xaa, 0x6a, 0xbc, 0x93,
-    0xad, 0x40, 0x16, 0x3f, 0xa6, 0xc1, 0x96, 0x7c
+    0x48, 0x2b, 0xdf, 0x9f, 0x2f, 0x2c, 0xd7, 0x9d,
+    0x03, 0x41, 0x16, 0x7d, 0xb4, 0x7f, 0xee, 0x5a
   };
 
-const uint8_t TAG_UUID_CHR_DATA[] =
+//uint8_t tag_hs;  
+
+BLEClientService tag_service = BLEClientService(BLEUuid(TAG_UUID_SERVICE));
+BLEClientCharacteristic tag_chr_switch = BLEClientCharacteristic(BLEUuid(TAG_UUID_CHR_SWITCH));
+
+//These are services we want to advertise for connection
+const uint8_t CENTRAL_UUID_SERVICE[] =
   {
-    0x07, 0xf6, 0xb4, 0x8f, 0xaa, 0x6a, 0xbc, 0x93,
-    0xad, 0x40, 0x16, 0x3f, 0xa7, 0xc1, 0x96, 0x7c
+    0x48, 0x2b, 0xdf, 0x9f, 0x2f, 0x2c, 0xd7, 0x9d,
+    0x03, 0x41, 0x16, 0x7d, 0xb6, 0x7f, 0xee, 0x5a
+  }; 
+
+const uint8_t CENTRAL_UUID_CHR_SWITCH[] =
+  {
+    0x48, 0x2b, 0xdf, 0x9f, 0x2f, 0x2c, 0xd7, 0x9d,
+    0x03, 0x41, 0x16, 0x7d, 0xb7, 0x7f, 0xee, 0x5a
   };
 
-uint8_t tag_hs;  
+BLEService central_service = BLEService(BLEUuid(CENTRAL_UUID_SERVICE));
+BLECharacteristic central_chr_switch = BLECharacteristic(BLEUuid(CENTRAL_UUID_CHR_SWITCH));
+BLEBas blebas;    // BAS (Battery Service) helper class instance
 
-BLEService tag_service = BLEService(BLEUuid(TAG_UUID_SERVICE));
-// BLECharacteristic tag_chr_hs = BLECharacteristic(BLEUuid(TAG_UUID_CHR_HS));
 // BLEBas blebas;    // BAS (Battery Service) helper class instance
 
 // const uint8_t LBS_UUID_SERVICE[] =
@@ -88,14 +121,20 @@ BLEService tag_service = BLEService(BLEUuid(TAG_UUID_SERVICE));
 //             0xad, 0x40, 0x163f, 0xa5, 0xc6, 0x96, 0x7c, 0x0a
 //       };
 
+
+//ppheriral info
+// uint8_t TAG_SERVICE_UUID[] =               {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xB0,0x00,0x40,0x51,0x04,0x70,0xAA,0x00,0xF0};
+// uint8_t TAG_CHARACTERISTIC_UUID[] =        {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xB0,0x00,0x40,0x51,0x04,0x71,0xAA,0x00,0xF0};
+// uint8_t TAG_SWITCH_CHARACTERISTIC_UUID[] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xB0,0x00,0x40,0x51,0x04,0x72,0xAA,0x00,0xF0};
+// uint8_t TAG_PERIOD_CHARACTERISTIC_UUID[] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xB0,0x00,0x40,0x51,0x04,0x73,0xAA,0x00,0xF0};
+// uint8_t TAG_ADV_COMPLETE_LOCAL_NAME[] =    {0x43,0x43,0x32,0x36,0x35,0x30,0x20,0x53,0x65,0x6e,0x73,0x6f,0x72,0x54,0x61,0x67};
+
+// BLEClientService        tagService(TAG_UUID_SERVICE);
+// BLEClientCharacteristic tagCharacteristic(TAG_CHARACTERISTIC_UUID); 
+// BLEClientCharacteristic tagCharacteristicSwitch(TAG_SWITCH_CHARACTERISTIC_UUID);
+//BLEClientCharacteristic tagCharacteristicPeriod(TAG_PERIOD_CHARACTERISTIC_UUID);
 // // Struct containing peripheral info
 typedef struct {
-  // prph_info_t()
-  //   : _service(BLEUuid(TAG_UUID_SERVICE)),
-  //     _notification(BLEUuid(TAG_UUID_CHR_BUTTON)),
-  //     _data(BLEUuid(TAG_UUID_CHR_DATA))
-  // { }
-
   char deviceName[16+1];
   uint16_t conn_handle;
   uint8_t addr[6];
@@ -152,6 +191,10 @@ uint8_t on_state;
 uint8_t low_lvl_pin = 5;
 uint8_t low_lvl_pin_state;
 
+//biometrics
+#define bioSerial Serial1
+Adafruit_Fingerprint finger = Adafruit_Fingerprint(&bioSerial);
+bool enrollment_mode = false;
 
 // Use on-board button if available, else use A0 pin
 #ifdef PIN_BUTTON1
@@ -266,7 +309,12 @@ Serial.begin(115200);
   // any characteristic(s) within that service definition.. Calling .begin() on
   // a BLECharacteristic will cause it to be added to the last BLEService that
   // was 'begin()'ed!
-  //tag_service.begin();
+  tag_service.begin();
+  //now characteristic
+  //tag_chr_switch.properties(CHR_PROPS_READ, CHR_PROPS_WRITE_WO_RESP);
+  //tag_chr_switch.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  //tag_chr_switch.setFixedLen(2);
+  tag_chr_switch.begin();
 
   // Configure Button characteristic
   // Properties = Read + Notify
@@ -327,22 +375,393 @@ Serial.begin(115200);
   Bluefruit.Scanner.start(0);                   // 0 = Don't stop scanning after n seconds
   setLED(false,"b");
   Serial.println(" done ...");
+
+  //bio stuff
+  // set the data rate for the sensor serial port
+  finger.begin(57600);
+  //delay(2000);
+  
+
+  //now setup advertising for getting commands from phone
+  startAdv();
+
 }
 
-// 
+
+
+// biometrics
+void printHex(int num, int precision) {
+  char tmp[16];
+  char format[128];
+
+  sprintf(format, "%%.%dX", precision);
+
+  sprintf(tmp, format, num);
+  Serial.print(tmp);
+}
+
+uint8_t downloadFingerprintTemplate(uint16_t id)
+{
+  Serial.println("------------------------------------");
+  Serial.print("Attempting to load #"); Serial.println(id);
+  uint8_t p = finger.loadModel(id);
+  switch (p) {
+    case FINGERPRINT_OK:
+      Serial.print("Template "); Serial.print(id); Serial.println(" loaded");
+      break;
+    case FINGERPRINT_PACKETRECIEVEERR:
+      Serial.println("Communication error");
+      return p;
+    default:
+      Serial.print("Unknown error "); Serial.println(p);
+      return p;
+  }
+
+  // OK success!
+
+  Serial.print("Attempting to get #"); Serial.println(id);
+  p = finger.getModel();
+  switch (p) {
+    case FINGERPRINT_OK:
+      Serial.print("Template "); Serial.print(id); Serial.println(" transferring:");
+      break;
+    default:
+      Serial.print("Unknown error "); Serial.println(p);
+      return p;
+  }
+
+  // one data packet is 267 bytes. in one data packet, 11 bytes are 'usesless' :D
+  uint8_t bytesReceived[534]; // 2 data packets
+  memset(bytesReceived, 0xff, 534);
+
+  uint32_t starttime = millis();
+  int i = 0;
+  while (i < 534 && (millis() - starttime) < 20000) {
+    if (bioSerial.available()) {
+      bytesReceived[i++] = bioSerial.read();
+    }
+  }
+  Serial.print(i); Serial.println(" bytes read.");
+  Serial.println("Decoding packet...");
+
+  uint8_t fingerTemplate[512]; // the real template
+  memset(fingerTemplate, 0xff, 512);
+
+  // filtering only the data packets
+  int uindx = 9, index = 0;
+  memcpy(fingerTemplate + index, bytesReceived + uindx, 256);   // first 256 bytes
+  uindx += 256;       // skip data
+  uindx += 2;         // skip checksum
+  uindx += 9;         // skip next header
+  index += 256;       // advance pointer
+  memcpy(fingerTemplate + index, bytesReceived + uindx, 256);   // second 256 bytes
+
+  for (int i = 0; i < 512; ++i) {
+    //Serial.print("0x");
+    printHex(fingerTemplate[i], 2);
+    //Serial.print(", ");
+  }
+  Serial.println("\ndone.");
+
+  return p;
+
+  /*
+    uint8_t templateBuffer[256];
+    memset(templateBuffer, 0xff, 256);  //zero out template buffer
+    int index=0;
+    uint32_t starttime = millis();
+    while ((index < 256) && ((millis() - starttime) < 1000))
+    {
+    if (mySerial.available())
+    {
+      templateBuffer[index] = mySerial.read();
+      index++;
+    }
+    }
+
+    Serial.print(index); Serial.println(" bytes read");
+
+    //dump entire templateBuffer.  This prints out 16 lines of 16 bytes
+    for (int count= 0; count < 16; count++)
+    {
+    for (int i = 0; i < 16; i++)
+    {
+      Serial.print("0x");
+      Serial.print(templateBuffer[count*16+i], HEX);
+      Serial.print(", ");
+    }
+    Serial.println();
+    }*/
+}
+
+//enrollment fingerprint suff
+int fp_template_count = 0;
+uint8_t getFingerprintEnroll() {
+
+  int p = -1;
+  Serial.print("Waiting for valid finger to enroll as #"); //Serial.println(id);
+  //make the next ID
+  fp_template_count = finger.templateCount;
+  while (p != FINGERPRINT_OK and enrollment_mode) {
+    setLED(true,"y");
+    p = finger.getImage();
+    switch (p) {
+    case FINGERPRINT_OK:
+      Serial.println("Image taken");
+      pulseLED(2,"g");
+      break;
+    case FINGERPRINT_NOFINGER:
+      Serial.println(".");
+      break;
+    case FINGERPRINT_PACKETRECIEVEERR:
+      Serial.println("Communication error");
+      pulseLED(2,"r");
+      break;
+    case FINGERPRINT_IMAGEFAIL:
+      Serial.println("Imaging error");
+      pulseLED(2,"r");
+      break;
+    default:
+      Serial.println("Unknown error");
+      pulseLED(2,"r");
+      break;
+    }
+  }
+  if(!enrollment_mode)
+    return -1;
+  
+  // OK success!
+  p = finger.image2Tz(1);
+  switch (p) {
+    case FINGERPRINT_OK:
+      Serial.println("Image converted");
+      break;
+    case FINGERPRINT_IMAGEMESS:
+      Serial.println("Image too messy");
+      pulseLED(2,"r");
+      return p;
+    case FINGERPRINT_PACKETRECIEVEERR:
+      Serial.println("Communication error");
+      pulseLED(2,"r");
+      return p;
+    case FINGERPRINT_FEATUREFAIL:
+      Serial.println("Could not find fingerprint features");
+      pulseLED(2,"r");
+      return p;
+    case FINGERPRINT_INVALIDIMAGE:
+      Serial.println("Could not find fingerprint features");
+      pulseLED(2,"r");
+      return p;
+    default:
+      Serial.println("Unknown error");
+      pulseLED(2,"r");
+      return p;
+  }
+
+  Serial.println("Remove finger");
+  pulseLED(2,"g");
+  delay(2000);
+  p = 0;
+  while (p != FINGERPRINT_NOFINGER) {
+    p = finger.getImage();
+  }
+  Serial.print("ID "); Serial.println(fp_template_count);
+  p = -1;
+  Serial.println("Place same finger again");
+  while (p != FINGERPRINT_OK) {
+    p = finger.getImage();
+    switch (p) {
+    case FINGERPRINT_OK:
+      Serial.println("Image taken");
+      break;
+    case FINGERPRINT_NOFINGER:
+      Serial.print(".");
+      break;
+    case FINGERPRINT_PACKETRECIEVEERR:
+      Serial.println("Communication error");
+      pulseLED(2,"r");
+      break;
+    case FINGERPRINT_IMAGEFAIL:
+      Serial.println("Imaging error");
+      pulseLED(2,"r");
+      break;
+    default:
+      Serial.println("Unknown error");
+      pulseLED(2,"r");
+      break;
+    }
+  }
+  pulseLED(2,"g");
+  // OK success!
+
+  p = finger.image2Tz(2);
+  switch (p) {
+    case FINGERPRINT_OK:
+      Serial.println("Image converted");
+      break;
+    case FINGERPRINT_IMAGEMESS:
+      Serial.println("Image too messy");
+      pulseLED(2,"r");
+      return p;
+    case FINGERPRINT_PACKETRECIEVEERR:
+      Serial.println("Communication error");
+      pulseLED(2,"r");
+      return p;
+    case FINGERPRINT_FEATUREFAIL:
+      Serial.println("Could not find fingerprint features");
+      pulseLED(2,"r");
+      return p;
+    case FINGERPRINT_INVALIDIMAGE:
+      Serial.println("Could not find fingerprint features");
+      pulseLED(2,"r");
+      return p;
+    default:
+      Serial.println("Unknown error");
+      pulseLED(2,"r");
+      return p;
+  }
+
+  // OK converted!
+  Serial.print("Creating model for #");  Serial.println(fp_template_count);
+  pulseLED(2,"g");
+
+  p = finger.createModel();
+  if (p == FINGERPRINT_OK) {
+    Serial.println("Prints matched!");
+  } else if (p == FINGERPRINT_PACKETRECIEVEERR) {
+    Serial.println("Communication error");
+    pulseLED(2,"r");
+    return p;
+  } else if (p == FINGERPRINT_ENROLLMISMATCH) {
+    Serial.println("Fingerprints did not match");
+    pulseLED(2,"r");
+    return p;
+  } else {
+    Serial.println("Unknown error");
+    pulseLED(2,"r");
+    return p;
+  }
+
+  Serial.print("ID "); Serial.println(fp_template_count);
+  p = finger.storeModel(fp_template_count);
+  if (p == FINGERPRINT_OK) {
+    Serial.println("Stored!");
+  } else if (p == FINGERPRINT_PACKETRECIEVEERR) {
+    Serial.println("Communication error");
+    pulseLED(2,"r");
+    return p;
+  } else if (p == FINGERPRINT_BADLOCATION) {
+    Serial.println("Could not store in that location");
+    pulseLED(2,"r");
+    return p;
+  } else if (p == FINGERPRINT_FLASHERR) {
+    Serial.println("Error writing to flash");
+    pulseLED(2,"r");
+    return p;
+  } else {
+    Serial.println("Unknown error");
+    pulseLED(2,"r");
+    return p;
+  }
+
+  return true;
+}
+
+uint8_t getFingerprintIDez() {
+  uint8_t p = finger.getImage();
+  switch (p) {
+    case FINGERPRINT_OK:
+      Serial.println("Image taken");
+      break;
+    case FINGERPRINT_NOFINGER:
+      Serial.println("No finger detected");
+      return p;
+    case FINGERPRINT_PACKETRECIEVEERR:
+      Serial.println("Communication error");
+      return p;
+    case FINGERPRINT_IMAGEFAIL:
+      Serial.println("Imaging error");
+      return p;
+    default:
+      Serial.println("Unknown error");
+      return p;
+  }
+
+  // OK success!
+
+  p = finger.image2Tz();
+  switch (p) {
+    case FINGERPRINT_OK:
+      Serial.println("Image converted");
+      break;
+    case FINGERPRINT_IMAGEMESS:
+      Serial.println("Image too messy");
+      return p;
+    case FINGERPRINT_PACKETRECIEVEERR:
+      Serial.println("Communication error");
+      return p;
+    case FINGERPRINT_FEATUREFAIL:
+      Serial.println("Could not find fingerprint features");
+      return p;
+    case FINGERPRINT_INVALIDIMAGE:
+      Serial.println("Could not find fingerprint features");
+      return p;
+    default:
+      Serial.println("Unknown error");
+      return p;
+  }
+
+  // OK converted!
+  p = finger.fingerSearch();
+  if (p == FINGERPRINT_OK) {
+    Serial.println("Found a print match!");
+  } else if (p == FINGERPRINT_PACKETRECIEVEERR) {
+    Serial.println("Communication error");
+    return p;
+  } else if (p == FINGERPRINT_NOTFOUND) {
+    Serial.println("Did not find a match");
+    return p;
+  } else {
+    Serial.println("Unknown error");
+    return p;
+  }
+
+  // found a match!
+  Serial.print("Found ID #"); Serial.print(finger.fingerID);
+  Serial.print(" with confidence of "); Serial.println(finger.confidence);
+
+  return finger.fingerID;
+}
+
+// returns -1 if failed, otherwise returns ID #
+// int getFingerprintIDez() {
+//   uint8_t p = finger.getImage();
+//   if (p != FINGERPRINT_OK)  return -1;
+
+//   p = finger.image2Tz();
+//   if (p != FINGERPRINT_OK)  return -1;
+
+//   p = finger.fingerFastSearch();
+//   if (p != FINGERPRINT_OK)  return -1;
+
+//   // found a match!
+//   Serial.print("Found ID #"); Serial.print(finger.fingerID);
+//   Serial.print(" with confidence of "); Serial.println(finger.confidence);
+//   return finger.fingerID;
+// }
 
 void startAdv(void)
 {
   // Central advertising packet
-  Bluefruit.Central.setConnectCallback(connect_callback);
-  Bluefruit.Central.setDisconnectCallback(disconnect_callback);
+  Bluefruit.Central.setConnectCallback(pher_connect_callback);
+  Bluefruit.Central.setDisconnectCallback(pher_disconnect_callback);
 
   // Advertising packet
   Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
   Bluefruit.Advertising.addTxPower();
 
-  // Include HRM Service UUID
-  Bluefruit.Advertising.addService(tag_service);
+  // Include tag Service UUID
+  Bluefruit.Advertising.addService(central_service);
 
   // Secondary Scan Response packet (optional)
   // Since there is no room for 'Name' in Advertising packet
@@ -390,15 +809,21 @@ void setLED(bool on, String clr)
   #endif
 }
 
-void pulseLED()
+void pulseLED(int times, String color)
 {
   // data = 1 -> pulse = On => 250msec then off
-  digitalWrite(pulse_pin, HIGH);
-  setLED(true,"b");
-  delay(1000);
-  digitalWrite(pulse_pin, LOW);
-  delay(400);
-  setLED(false,"b");
+  for (int i = 0; i < times; i++) {
+    // digitalWrite(LED_BUILTIN, LED_STATE_ON);
+    // delay(250);
+    // digitalWrite(LED_BUILTIN, 1-LED_STATE_ON);
+    // delay(250);
+    digitalWrite(pulse_pin, HIGH);
+    setLED(true,color);
+    delay(1000);
+    digitalWrite(pulse_pin, LOW);
+    delay(400);
+    setLED(false,color);
+  }
 }
 
 void switchMachine(int on)
@@ -428,7 +853,63 @@ void switchMachine(int on)
 
 void loop()
 {
-  delay(10); 
+  //testing the characterlink by switching the relay on and off on pheripheral
+  // delay(10000);
+  // Serial.println( tag_chr_switch.write8( 0x01 ) ); 
+  // delay(10000);
+  // Serial.println( tag_chr_switch.write8( 0x00 ) ); 
+
+  //bio stuff
+  Serial.println("Looking for fingerprint sensor!");
+  if (finger.verifyPassword()) {
+    Serial.println("Found fingerprint sensor!");
+    Serial.println(F("Reading sensor parameters"));
+  finger.getParameters();
+  Serial.print(F("Status: 0x")); Serial.println(finger.status_reg, HEX);
+  Serial.print(F("Sys ID: 0x")); Serial.println(finger.system_id, HEX);
+  Serial.print(F("Capacity: ")); Serial.println(finger.capacity);
+  Serial.print(F("Security level: ")); Serial.println(finger.security_level);
+  Serial.print(F("Device address: ")); Serial.println(finger.device_addr, HEX);
+  Serial.print(F("Packet len: ")); Serial.println(finger.packet_len);
+  Serial.print(F("Baud rate: ")); Serial.println(finger.baud_rate);
+
+  finger.getTemplateCount();
+
+  if (finger.templateCount == 0) {
+    Serial.print("Sensor doesn't contain any fingerprint data. Please run the 'enroll' example.");
+    pulseLED(2,"r");
+  }
+  else {
+    Serial.println("Waiting for valid finger...");
+      Serial.print("Sensor contains "); Serial.print(finger.templateCount); Serial.println(" templates");
+      pulseLED(2,"g");
+  }
+  } else {
+    Serial.println("Did not find fingerprint sensor :( \n");
+  }
+
+  if(enrollment_mode) {
+    Serial.println("Enrollment mode");
+    int id = getFingerprintIDez();
+    if (id >= 0) {
+      Serial.print("Found ID #"); Serial.print(id);
+      Serial.print("\n");
+      downloadFingerprintTemplate(id);
+    }
+  }
+  else {
+    Serial.println("Normal mode");
+    int id = getFingerprintIDez();
+    if (id >= 0) {
+      Serial.print("Found ID #"); Serial.print(id);
+      Serial.print("\n");
+      downloadFingerprintTemplate(id);
+    }
+  }
+
+
+
+
   // First check if we are connected to any peripherals
   // if ( Bluefruit.Central.connected() )
   // {
@@ -476,82 +957,6 @@ void printDeviceInfo(const prph_info_t& info) {
   Serial.println(info.deviceName);
 }
 
-
-// bool isDeviceInfoEqual(const prph_info_t& info1, const prph_info_t& info2) {
-//   return (memcmp(info1.addr, info2.addr, 6) == 0 &&
-//           info1.rssi == info2.rssi &&
-//           memcmp(info1.data, info2.data, sizeof(info1.data)) == 0 &&
-//           info1.deviceName == info2.deviceName);
-// }
-
-// void scan_callback(ble_gap_evt_adv_report_t* report)
-// {
-//   // Since we configure the scanner with filterUuid()
-//   // Scan callback only invoked for device with bleuart service advertised  
-//   // Connect to the device with bleuart service in advertising packet
-//   //Bluefruit.Central.connect(report);
-
-//   //from scan example ada
-
-//   Serial.println("Timestamp Addr              Rssi Data");
-
-//   Serial.printf("%09d ", millis());
-  
-//   // MAC is in little endian --> print reverse
-//   Serial.printBufferReverse(report->peer_addr.addr, 6, ':');
-//   Serial.print(" ");
-
-//   Serial.print(report->rssi);
-//   Serial.print("  ");
-
-//   Serial.printBuffer(report->data.p_data, report->data.len, '-');
-//   Serial.println();
-
-//   // Check if advertising contain BleUart service
-//   if ( Bluefruit.Scanner.checkReportForUuid(report, BLEUART_UUID_SERVICE) )
-//   {
-//     Serial.println("                       BLE UART service detected");
-//   }
-
-//   Serial.println();
-
-//   // For Softdevice v6: after received a report, scanner will be paused
-//   // We need to call Scanner resume() to continue scanning
-//   Bluefruit.Scanner.resume();
-// }
-
-// void scan_callback(ble_gap_evt_adv_report_t* report) {
-//   prph_info_t currentDevice;
-//   memcpy(currentDevice.addr, report->peer_addr.addr, 6);
-//   currentDevice.rssi = report->rssi;
-//   memcpy(currentDevice.data, report->data.p_data, min(report->data.len, sizeof(currentDevice.data)));
-//   currentDevice.deviceName = Bluefruit.Scanner.getDeviceName(report);
-
-//   bool deviceChanged = true;
-//   for (uint8_t i = 0; i < numDevices; ++i) {
-//     if (isDeviceInfoEqual(currentDevice, prphs[i])) {
-//       deviceChanged = false;
-//       break;
-//     }
-//   }
-
-//   if (deviceChanged) {
-//     prphs[numDevices] = currentDevice;
-//     ++numDevices;
-
-//     // Print the updated information
-//     printDeviceInfo(currentDevice);
-//   }
-
-//   // Check if advertising contains BleUart service
-//   if (Bluefruit.Scanner.checkReportForUuid(report, BLEUART_UUID_SERVICE)) {
-//     Serial.println("                       BLE UART service detected");
-//   }
-
-//   // For Softdevice v6: after receiving a report, the scanner will be paused
-//   // We need to call Scanner resume() to continue scanning
-//   Bluefruit.Scanner.resume();
-// }
 void printUuid16List(uint8_t* buffer, uint8_t len)
 {
   Serial.printf("%14s %s", "16-Bit UUID");
@@ -734,7 +1139,6 @@ void scan_callback(ble_gap_evt_adv_report_t* report)
       prph_info_t* peer = &prphs[id];
       Bluefruit.getName(peer->deviceName, sizeof(peer->deviceName));
       reverse_chr_array(peer->addr, 6);
-
       Serial.printf("Found %s ", peer->deviceName);
       Serial.println();
       Serial.printBufferReverse(report->peer_addr.addr, 6, ':');
@@ -757,11 +1161,84 @@ void scan_callback(ble_gap_evt_adv_report_t* report)
 
 
 // callback invoked when central connects
+//ideas from here
 void connect_callback(uint16_t conn_handle)
 {
   //(void) conn_handle;
 
-  pulseLED();
+  pulseLED(2, "b");	
+  Serial.println("");
+  Serial.print("Connect Callback, conn_handle: "); 
+  Serial.println( conn_handle );
+   
+  // If Service is not found, disconnect and return
+  Serial.print("Discovering Service ... ");
+  if ( !tag_service.discover(conn_handle) )
+  {
+    Serial.println("No Service Found");
+
+    // disconnect since we couldn't find service
+    Bluefruit.disconnect(conn_handle);
+
+    return;
+  } 
+  Serial.println("Service Found");
+
+  // Once service is found, we continue to discover the primary characteristic
+  Serial.print("Discovering Characteristic ... ");
+  if ( !tag_chr_switch.discover() )
+  {
+    // Measurement chr is mandatory, if it is not found (valid), then disconnect
+    Serial.println("No Characteristic Found. Characteristic is mandatory but not found. ");
+    Bluefruit.disconnect(conn_handle);
+    return;
+  }
+  Serial.println("Characteristic Found");
+ 
+  // Data Collection Charactistic. Find and enable. 
+  // You enable data collection on the Characteristic before the peripheral will start measuring values.
+  // This is different than setting the Notify descriptor, which is handled below.
+  // Serial.print("Discovering Data Collection Configuration Characteristic ... ");
+  // if ( !tagCharacteristicSwitch.discover() )
+  // {
+  //   Serial.println("No Switch Characteristic Found. Characteristic is mandatory but not found.");   
+  //   Bluefruit.disconnect(conn_handle);
+  //   return;
+  // }
+  // Serial.println("Switch Characteristic Found"); 
+  // Found it, now write 0x01 to turn on optical data collection
+  // Serial.print("Enabling Data Collection: ");
+  // Serial.println( tagCharacteristic.write8( 0x01 ) );
+  // // Reaching here means we are ready to go, let's enable
+  // Serial.print("Enabling Notify on the Characteristic ... ");
+  // if ( tagCharacteristic.enableNotify() )
+  // {
+  //   Serial.println("enableNotify success, now ready to receive Characteristic values");
+  // }else
+  // {
+  //   Serial.println("Couldn't enable notify for Characteristic. Increase DEBUG LEVEL for troubleshooting");
+  // }
+ 
+  // Measurement Period Characteristic. Find and adjust. 
+  // Serial.print("Measurement Period Characteristic ... ");
+  // if ( !opticalCharacteristicPeriod.discover() )
+  // {
+  //   Serial.println("No Characteristic Found, but not mandatory so not disconnecting");    
+  // }
+  // Serial.println("Characteristic Found");
+  // Found it, now adjust it: 
+  // Resolution 10 ms. Range 100 ms (0x0A) to 2.55 sec (0xFF). Default is 800 milliseconds (0x50).
+  // 19 is 250
+  // Serial.print("Adjusting Measurement Period, return value: ");
+  // // Serial.println( opticalCharacteristicPeriod.write8( 0xFF ) ); // Slowest
+  // Serial.println( opticalCharacteristicPeriod.write8( 0x0A ) ); // Fastest
+
+  // notification
+  
+
+
+
+
   //lsbLED.write8(0x01);
 
   //do battery read
@@ -780,25 +1257,41 @@ void connect_callback(uint16_t conn_handle)
   // If HRM is not found, disconnect and return
   // Find an available ID to use
   // Scan for more devices
-  Bluefruit.Scanner.start(0);
-  
-  // Find an available ID to use
-  int id  = findConnHandle(BLE_CONN_HANDLE_INVALID);
+  //Bluefruit.Scanner.start(0);
 
-  // Eeek: Exceeded the number of connections !!!
-  if ( id < 0 ) return;
-  
-  prph_info_t* peer = &prphs[id];
-  peer->conn_handle = conn_handle;
-  
-  Bluefruit.getName(peer->deviceName, sizeof(peer->deviceName));
+  //Bluefruit.getName(conn_handle->deviceName, sizeof(peer->deviceName));
   //Bluefruit.Gap.getPeerName(conn_handle, peer->name, 32);
   // Bluefruit.getAddr(peer->addr, sizeof(peer->addr));
   // reverse_chr_array(peer->addr, 6);
 
-  Serial.printf("Connected to %s ", peer->deviceName);
-  Serial.printBuffer(peer->addr, 6, ':');
-  Serial.println();
+  // Serial.printf("Connected to %s ", peer->deviceName);
+  // Serial.printBuffer(peer->addr, 6, ':');
+  // Serial.println();
+  
+  // Find an available ID to use
+  //int id  = findConnHandle(BLE_CONN_HANDLE_INVALID);
+  // BLEConnection* conn = Bluefruit.Connection(conn_handle);
+  // prph_info_t* peer;
+  // peer->conn_handle = conn_handle;
+  // //memcpy(peer->addr, conn->getPeerAddr(), 6);
+  // memcpy(peer->addr, &(conn->getPeerAddr()), sizeof(conn->getPeerAddr()));
+  // reverse_chr_array(peer->addr, 6);
+  // //conn.
+
+  // // Eeek: Exceeded the number of connections !!!
+  // if ( id < 0 ) return;
+  
+  // prph_info_t* peer = &prphs[id];
+  // peer->conn_handle = conn_handle;
+  
+  // Bluefruit.getName(peer->deviceName, sizeof(peer->deviceName));
+  // //Bluefruit.Gap.getPeerName(conn_handle, peer->name, 32);
+  // // Bluefruit.getAddr(peer->addr, sizeof(peer->addr));
+  // // reverse_chr_array(peer->addr, 6);
+
+  // Serial.printf("Connected to %s ", peer->deviceName);
+  // Serial.printBuffer(peer->addr, 6, ':');
+  // Serial.println();
 
   // Serial.print("!OC ");
   // Serial.printBuffer(peer->addr, 6, ':');
@@ -807,26 +1300,26 @@ void connect_callback(uint16_t conn_handle)
   connection_num++;
 
   // Call BLECentralService discover
-  peer->_service.discover(id);
+  // peer->_service.discover(id);
 
-  // Discover characteristics
-  BLEClientCharacteristic* chr_arr[] = { &peer->_notification, &peer->_data };
-  Bluefruit.Discovery.discoverCharacteristic(id, chr_arr, 2);
+  // // Discover characteristics
+  // BLEClientCharacteristic* chr_arr[] = { &peer->_notification, &peer->_data };
+  // Bluefruit.Discovery.discoverCharacteristic(id, chr_arr, 2);
 
-  if (peer->_data.read(Readbuf, 1) > 0) {
-    if (Readbuf[0] > 100) {
-      //peer->buckled_state = 1;
-      peer->batt = Readbuf[0] - 100;
-    }
-    else {
-      //peer->buckled_state = 0;
-      peer->batt = Readbuf[0];
-    }
-  }
-  printNotify(peer);
+  // if (peer->_data.read(Readbuf, 1) > 0) {
+  //   if (Readbuf[0] > 100) {
+  //     //peer->buckled_state = 1;
+  //     peer->batt = Readbuf[0] - 100;
+  //   }
+  //   else {
+  //     //peer->buckled_state = 0;
+  //     peer->batt = Readbuf[0];
+  //   }
+  // }
+  // printNotify(peer);
 
-  peer->_notification.enableNotify();
-  peer->_data.enableNotify();
+  // peer->_notification.enableNotify();
+  // peer->_data.enableNotify();
   }  
 
   
@@ -887,49 +1380,81 @@ void disconnect_callback(uint16_t conn_handle, uint8_t reason)
  * @param uart_svc Reference object to the service where the data 
  * arrived.
  */
-void bleuart_rx_callback(BLEClientUart& uart_svc)
+void pher_connect_callback(uint16_t conn_handle)
 {
-  // uart_svc is prphs[conn_handle].bleuart
-  uint16_t conn_handle = uart_svc.connHandle();
-
-  int id = findConnHandle(conn_handle);
-  prph_info_t* peer = &prphs[id];
+  // As of Adafruit nRF52 Arduino 0.10.1, use BLEConnection
+  BLEConnection* connection = Bluefruit.Connection(conn_handle);
   
-  // Print sender's name
-  Serial.printf("[From %s]: ", peer->deviceName);
-
-  // Read then forward to all peripherals
-  while ( uart_svc.available() )
-  {
-    // default MTU with an extra byte for string terminator
-    char buf[20+1] = { 0 };
-    
-    if ( uart_svc.read(buf,sizeof(buf)-1) )
-    {
-      Serial.println(buf);
-      sendAll(buf);
+  // handle checks for running sessions and other reconnection details here
+  char central[32] = { 0 };
+  connection->getPeerName(central, sizeof(central));
+  Serial.print("Connected to ");
+  Serial.println(central);
+  pulseLED(2, "b");
+  connection_count++;
+  Serial.print("Connection count: ");
+  Serial.println(connection_count);
+  //now set the fingerprintscanner in enrollment mode
+  enrollment_mode = true;
+  setLED(true,"y");
+  while (1) {
+    if (getFingerprintEnroll() == FINGERPRINT_OK || !enrollment_mode ) {
+      Bluefruit.disconnect(conn_handle);
+      break;
     }
   }
+  
+  //(void) conn_handle;
+
+  
+  //lsbLED.write8(0x01);
+
+  //do battery read
+  float measuredvbat = analogRead(VBATPIN);
+  measuredvbat *= 2;    // we divided by 2, so multiply back
+  measuredvbat *= 3.55;  // Multiply by 3.3V, our reference voltage
+  measuredvbat /= 1024; // convert to voltage
+  measuredvbat /= 4.1;
+   measuredvbat *= 100; //now %
+  measuredvbat = floor(measuredvbat);
+  int vbat_int = round(measuredvbat);
+  //blebas.write(vbat_int);
+  //tag_chr_nfy_low.write8(vbat_int);
+  Serial.print("VBat: " ); Serial.println(vbat_int);
+  // Keep advertising if not reaching max
+  // if (connection_count < MAX_PRPH_CONNECTION)
+  // {
+  //   Serial.println("Keep advertising");
+  //   Bluefruit.Advertising.start(0);
+  // }
 }
 
 /**
- * Helper function to send a string to all connected peripherals
+ * Callback invoked when a connection is dropped
+ * @param conn_handle connection where this event happens
+ * @param reason is a BLE_HCI_STATUS_CODE which can be found in ble_hci.h
  */
-// void sendAll(const char* str)
-// {
-//   Serial.print("[Send to All]: ");
-//   Serial.println(str);
-  
-//   for(uint8_t id=0; id < BLE_MAX_CONNECTION; id++)
-//   {
-//     prph_info_t* peer = &prphs[id];
+void pher_disconnect_callback(uint16_t conn_handle, uint8_t reason)
+{
+  (void) conn_handle;
+  (void) reason;
 
-//     // if ( peer->bleuart.discovered() )
-//     // {
-//     //   peer->bleuart.print(str);
-//     // }
-//   }
-// }
+  setLED(true,"y");
+  delay(1000);
+  setLED(false,"y");
+  //lsbLED.write8(0x00);
+  Serial.println();
+  Serial.print("Pheripharal Disconnected from phone, reason = 0x"); Serial.println(reason, HEX);
+
+  connection_count--;
+
+  //Keep advertising if not reaching max
+  if (connection_count < MAX_PRPH_CONNECTION)
+  {
+    Serial.println("Keep advertising");
+    Bluefruit.Advertising.start(0);
+  }
+}
 
 
 /**
