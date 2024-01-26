@@ -29,6 +29,7 @@ void scan_callback(ble_gap_evt_adv_report_t* report);
 int findConnHandle(uint16_t conn_handle);
 int getFingerprintID();
 uint8_t getFingerprintIDez();
+void notify_callback(BLEClientCharacteristic* chr, uint8_t* data, uint16_t len);
 
 
 
@@ -56,7 +57,7 @@ char tag_ver[30] = "BIOgaurd central 240110";
 const uint8_t TAG_UUID_SERVICE[] =
   {
     0x48, 0x2b, 0xdf, 0x9f, 0x2f, 0x2c, 0xd7, 0x9d,
-    0x03, 0x41, 0x16, 0x7d, 0xb3, 0x7f, 0xee, 0x5a
+    0x03, 0x41, 0x16, 0x7d, 0xb1, 0x7f, 0xee, 0x5a
   }; 
 
 const uint8_t TAG_UUID_CHR_SWITCH[] =
@@ -75,6 +76,7 @@ const uint8_t TAG_UUID_CHR_BUTTON[] =
 
 BLEClientService tag_service = BLEClientService(BLEUuid(TAG_UUID_SERVICE));
 BLEClientCharacteristic tag_chr_switch = BLEClientCharacteristic(BLEUuid(TAG_UUID_CHR_SWITCH));
+BLEClientCharacteristic tag_chr_button = BLEClientCharacteristic(BLEUuid(TAG_UUID_CHR_BUTTON));
 
 //These are services we want to advertise for connection
 const uint8_t CENTRAL_UUID_SERVICE[] =
@@ -88,6 +90,8 @@ const uint8_t CENTRAL_UUID_CHR_SWITCH[] =
     0x48, 0x2b, 0xdf, 0x9f, 0x2f, 0x2c, 0xd7, 0x9d,
     0x03, 0x41, 0x16, 0x7d, 0xb7, 0x7f, 0xee, 0x5a
   };
+
+
 
 BLEService central_service = BLEService(BLEUuid(CENTRAL_UUID_SERVICE));
 BLECharacteristic central_chr_switch = BLECharacteristic(BLEUuid(CENTRAL_UUID_CHR_SWITCH));
@@ -255,8 +259,8 @@ void switch6_callback(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, 
 void setup()
 {
 Serial.begin(115200);
-   delay(100);
-   while (!Serial); 
+   delay(4000);
+   //while (!Serial); 
   Serial.println(tag_ver);
   Serial.println("------------------------------\n");
 
@@ -301,6 +305,7 @@ Serial.begin(115200);
   //Bluefruit.Periph.setDisconnectCallback(disconnect_callback);
   Bluefruit.Central.setConnectCallback(connect_callback);
   Bluefruit.Central.setDisconnectCallback(disconnect_callback);
+  tag_chr_button.setNotifyCallback(notify_callback);
 
   // Setup manufacturer tag service
   //Serial.println("Configuring the Manufacturer Tag Service");
@@ -336,11 +341,12 @@ Serial.begin(115200);
   // Properties = Read + Notify
   // Permission = Open to read, cannot write
   // Fixed Len  = 1 (button state)
-  // lsbButton.setProperties(CHR_PROPS_READ | CHR_PROPS_NOTIFY);
-  // lsbButton.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
-  // lsbButton.setFixedLen(1);
-  // lsbButton.begin();
-  // lsbButton.write8(buttonState);
+  //tag_chr_button.setProperties(CHR_PROPS_READ | CHR_PROPS_NOTIFY);
+  //tag_chr_button.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  //tag_chr_button.setFixedLen(1);
+
+  tag_chr_button.begin();
+  //tag_chr_button.write8(buttonState);
 
   // lbsSwitch.setProperties(CHR_PROPS_READ | CHR_PROPS_WRITE | CHR_PROPS_WRITE_WO_RESP);
   // lbsSwitch.setPermission(SECMODE_OPEN, SECMODE_OPEN);
@@ -362,9 +368,11 @@ Serial.begin(115200);
   //blebas.write(100);
 
   // Setup the advertising packet(s)
-  Serial.print("Setting up the scanning ...");
+  
   Bluefruit.setName(tag_name);
-  //startAdv();
+  startAdv();
+  //now scan
+  Serial.print("Setting up the scanning ...");
   Bluefruit.Scanner.setRxCallback(scan_callback);
   Bluefruit.Scanner.restartOnDisconnect(true);
   Bluefruit.Scanner.setInterval(160, 80);       // in units of 0.625 ms
@@ -380,11 +388,6 @@ Serial.begin(115200);
   // set the data rate for the sensor serial port
   finger.begin(57600);
   //delay(2000);
-  
-
-  //now setup advertising for getting commands from phone
-  startAdv();
-
 }
 
 
@@ -499,237 +502,326 @@ int fp_template_count = 0;
 uint8_t getFingerprintEnroll() {
 
   int p = -1;
-  Serial.print("Waiting for valid finger to enroll as #"); //Serial.println(id);
+  setLED(true,"g");
+  Serial.print("Enrollment - Waiting for valid finger to enroll as #"); //Serial.println(id);
   //make the next ID
   fp_template_count = finger.templateCount;
-  while (p != FINGERPRINT_OK and enrollment_mode) {
-    setLED(true,"y");
-    p = finger.getImage();
+  p = finger.getImage();
+  if (p == FINGERPRINT_OK)  {
+    Serial.println("Enrollment - Image taken");
+  }
+  int get_fingerprint = millis();
+  while (millis() - get_fingerprint < 10000 and p != FINGERPRINT_OK) {
     switch (p) {
     case FINGERPRINT_OK:
-      Serial.println("Image taken");
-      pulseLED(2,"g");
+      Serial.println("Enrollment 1 - Image taken");
+      //pulseLED(5,"g");
       break;
     case FINGERPRINT_NOFINGER:
-      Serial.println(".");
+      Serial.print(".");
+      //pulseLED(3,"r");
       break;
     case FINGERPRINT_PACKETRECIEVEERR:
-      Serial.println("Communication error");
-      pulseLED(2,"r");
+      Serial.println("Enrollment 1 - Communication error");
+      //pulseLED(3,"r");
       break;
     case FINGERPRINT_IMAGEFAIL:
-      Serial.println("Imaging error");
-      pulseLED(2,"r");
+      Serial.println("Enrollment 1 - Imaging error");
+      //pulseLED(3,"r");
       break;
     default:
-      Serial.println("Unknown error");
-      pulseLED(2,"r");
+      Serial.println("Enrollment 1 - Unknown error");
+      //pulseLED(3,"r");
       break;
     }
+    p = finger.getImage();
   }
-  if(!enrollment_mode)
-    return -1;
+  
+  if(!enrollment_mode or p != FINGERPRINT_OK)
+  {
+    pulseLED(3,"w");
+    pulseLED(3,"r");
+    enrollment_mode = false;
+    return p;
+  }
   
   // OK success!
   p = finger.image2Tz(1);
   switch (p) {
     case FINGERPRINT_OK:
-      Serial.println("Image converted");
+      Serial.println("Enrollment 1 - Image converted");
       break;
     case FINGERPRINT_IMAGEMESS:
-      Serial.println("Image too messy");
-      pulseLED(2,"r");
-      return p;
+      Serial.println("Enrollment 1 - Image too messy");
+      break;
     case FINGERPRINT_PACKETRECIEVEERR:
-      Serial.println("Communication error");
-      pulseLED(2,"r");
-      return p;
+      Serial.println("Enrollment 1 - Image conversion. Communication error");
+      break;
     case FINGERPRINT_FEATUREFAIL:
-      Serial.println("Could not find fingerprint features");
-      pulseLED(2,"r");
-      return p;
+      Serial.println("Enrollment 1 - Image conversion. Could not find fingerprint features");
+      break;
     case FINGERPRINT_INVALIDIMAGE:
-      Serial.println("Could not find fingerprint features");
-      pulseLED(2,"r");
-      return p;
+      Serial.println("Enrollment 1 - Image conversion. Could not find fingerprint features");
+      break;
     default:
-      Serial.println("Unknown error");
-      pulseLED(2,"r");
-      return p;
+      Serial.println("Enrollment 1 - Unknown error");
+      break;
   }
 
-  Serial.println("Remove finger");
-  pulseLED(2,"g");
-  delay(2000);
-  p = 0;
+  if(!enrollment_mode or p != FINGERPRINT_OK)
+  {
+    pulseLED(3,"w");
+    pulseLED(3,"r");
+    enrollment_mode = false;
+    return p;
+  }
+  else
+  {
+    //pulseLED(4,"g");
+    setLED(true,"g");
+  } 
+
+  Serial.println("Enrollment 2 - Remove finger");
+  //pulseLED(5,"w");
+  setLED(true,"w");
+  //delay(2000);
+  p = finger.getImage();
   while (p != FINGERPRINT_NOFINGER) {
     p = finger.getImage();
   }
   Serial.print("ID "); Serial.println(fp_template_count);
-  p = -1;
-  Serial.println("Place same finger again");
-  while (p != FINGERPRINT_OK) {
+  Serial.println("Enrollment 2 - Place same finger again");
+  setLED(true,"g");
+  get_fingerprint = millis();
+  p = finger.getImage();
+  if (p == FINGERPRINT_OK)  {
+    Serial.println("Enrollment 2 - Image taken");
+  }
+  while (p != FINGERPRINT_OK  and (millis() - get_fingerprint < 10000)) {
     p = finger.getImage();
     switch (p) {
     case FINGERPRINT_OK:
-      Serial.println("Image taken");
+      Serial.println("Enrollment 2 - Image taken");
       break;
     case FINGERPRINT_NOFINGER:
       Serial.print(".");
       break;
     case FINGERPRINT_PACKETRECIEVEERR:
-      Serial.println("Communication error");
-      pulseLED(2,"r");
+      Serial.println("Enrollment 2 - Communication error");
       break;
     case FINGERPRINT_IMAGEFAIL:
-      Serial.println("Imaging error");
-      pulseLED(2,"r");
+      Serial.println("Enrollment 2 - Imaging error");
       break;
     default:
-      Serial.println("Unknown error");
-      pulseLED(2,"r");
+      Serial.println("Enrollment 2 - Unknown error");
       break;
     }
+    p = finger.getImage();
   }
-  pulseLED(2,"g");
-  // OK success!
 
+  if(!enrollment_mode or p != FINGERPRINT_OK)
+  {
+    pulseLED(3,"w");
+    pulseLED(3,"r");
+    enrollment_mode = false;
+    return p;
+  }
+  else{
+    //pulseLED(5,"g");
+    setLED(true,"g");
+  } 
+  // OK success!
+  get_fingerprint = millis();
+  p = finger.image2Tz(2);
+  while (p != FINGERPRINT_OK  and (millis() - get_fingerprint < 3000)) {
   p = finger.image2Tz(2);
   switch (p) {
     case FINGERPRINT_OK:
-      Serial.println("Image converted");
+      Serial.println("Enrollment 2 - Image converted");
       break;
     case FINGERPRINT_IMAGEMESS:
-      Serial.println("Image too messy");
-      pulseLED(2,"r");
-      return p;
+      Serial.println("Enrollment 2 - Image too messy");
+      break;
     case FINGERPRINT_PACKETRECIEVEERR:
-      Serial.println("Communication error");
-      pulseLED(2,"r");
-      return p;
+      Serial.println("Enrollment 2 - Communication error");
+      break;
     case FINGERPRINT_FEATUREFAIL:
-      Serial.println("Could not find fingerprint features");
-      pulseLED(2,"r");
-      return p;
+      Serial.println("Enrollment 2 - Could not find fingerprint features");
+      break;
     case FINGERPRINT_INVALIDIMAGE:
-      Serial.println("Could not find fingerprint features");
-      pulseLED(2,"r");
-      return p;
+      Serial.println("Enrollment 2 - Could not find fingerprint features");
+      break;
     default:
-      Serial.println("Unknown error");
-      pulseLED(2,"r");
-      return p;
+      Serial.println("Enrollment 2 - Unknown error");
+      break;;
+  }
+  p = finger.image2Tz(2);
+  } //end while
+
+
+if(!enrollment_mode or p != FINGERPRINT_OK)
+  {
+    pulseLED(3,"w");
+    pulseLED(3,"r");
+    enrollment_mode = false;
+    return p;
+  }
+  else{
+    //pulseLED(5,"g");
   }
 
   // OK converted!
   Serial.print("Creating model for #");  Serial.println(fp_template_count);
-  pulseLED(2,"g");
-
+  setLED(true,"w");
   p = finger.createModel();
   if (p == FINGERPRINT_OK) {
-    Serial.println("Prints matched!");
+    Serial.println("Enrollment 2 - Verify. Prints matched!");
   } else if (p == FINGERPRINT_PACKETRECIEVEERR) {
-    Serial.println("Communication error");
-    pulseLED(2,"r");
-    return p;
+    Serial.println("Enrollment 2 - Verify. Communication error");
   } else if (p == FINGERPRINT_ENROLLMISMATCH) {
-    Serial.println("Fingerprints did not match");
-    pulseLED(2,"r");
-    return p;
+    Serial.println("Enrollment 2 - Verify. Fingerprints did not match");
   } else {
-    Serial.println("Unknown error");
-    pulseLED(2,"r");
-    return p;
+    Serial.println("Enrollment 2 - Verify. Unknown error");
   }
 
+  if(!enrollment_mode or p != FINGERPRINT_OK)
+  {
+    pulseLED(5,"w");
+    pulseLED(5,"r");
+    enrollment_mode = false;
+    return p;
+  }
+  // else{
+  //   //pulseLED(5,"g");
+  // } 
+  delay(1000);
   Serial.print("ID "); Serial.println(fp_template_count);
+  get_fingerprint = millis();
   p = finger.storeModel(fp_template_count);
   if (p == FINGERPRINT_OK) {
-    Serial.println("Stored!");
+    Serial.println("Enrollment. Stored!");
+  }
+  while (p != FINGERPRINT_OK  and (millis() - get_fingerprint < 3000)) {
+  p = finger.storeModel(fp_template_count);
+  if (p == FINGERPRINT_OK) {
+    Serial.println("Enrollment. Stored!");
+    break;
   } else if (p == FINGERPRINT_PACKETRECIEVEERR) {
-    Serial.println("Communication error");
-    pulseLED(2,"r");
-    return p;
+    Serial.println("Enrollment - Storing. Communication error");
   } else if (p == FINGERPRINT_BADLOCATION) {
-    Serial.println("Could not store in that location");
-    pulseLED(2,"r");
-    return p;
+    Serial.println("Enrollment - Storing. Could not store in that location");
   } else if (p == FINGERPRINT_FLASHERR) {
-    Serial.println("Error writing to flash");
-    pulseLED(2,"r");
-    return p;
+    Serial.println("Enrollment - Storing. Error writing to flash");
   } else {
-    Serial.println("Unknown error");
-    pulseLED(2,"r");
+    Serial.println("Enrollment - Storing. Unknown error");
+  }
+  } //end while
+
+  if(!enrollment_mode or p != FINGERPRINT_OK)
+  {
+    pulseLED(5,"w");
+    pulseLED(5,"r");
+    enrollment_mode = false;
     return p;
   }
-
-  return true;
+  else{
+    pulseLED(2,"w");
+    pulseLED(2,"g");
+    pulseLED(2,"w");
+    pulseLED(2,"g");
+    pulseLED(2,"w");
+    pulseLED(2,"g");
+  }
+  enrollment_mode = false;
+  setLED(true,"y");
+  return p;
 }
 
 uint8_t getFingerprintIDez() {
+  
+  setLED(true,"y");
+  delay(1500);
   uint8_t p = finger.getImage();
-  switch (p) {
+  float get_fingerprint = millis(); 
+  while(millis() - get_fingerprint < 10000 and p != FINGERPRINT_OK)
+  {
+    //delay(500);
+    switch (p) {
     case FINGERPRINT_OK:
-      Serial.println("Image taken");
+      Serial.println("Matching - Image taken");
       break;
     case FINGERPRINT_NOFINGER:
-      Serial.println("No finger detected");
+      Serial.println("Matching - No finger detected");
+      //pulseLED(3,"r");
       return p;
     case FINGERPRINT_PACKETRECIEVEERR:
-      Serial.println("Communication error");
+      Serial.println("Matching - Communication error");
+      pulseLED(3,"r");
       return p;
     case FINGERPRINT_IMAGEFAIL:
-      Serial.println("Imaging error");
+      Serial.println("Matching - Imaging error");
+      pulseLED(3,"r");
       return p;
     default:
-      Serial.println("Unknown error");
+      Serial.println("Matching - Unknown error");
+      pulseLED(3,"r");
       return p;
+    p = finger.getImage();
   }
-
+  }//end while
   // OK success!
-
+  //pulseLED(5,"b");
+  setLED(true,"y");
   p = finger.image2Tz();
   switch (p) {
     case FINGERPRINT_OK:
-      Serial.println("Image converted");
+      Serial.println("Matching - Image converted");
       break;
     case FINGERPRINT_IMAGEMESS:
-      Serial.println("Image too messy");
+      Serial.println("Matching - Image too messy");
+      pulseLED(3,"r");
       return p;
     case FINGERPRINT_PACKETRECIEVEERR:
-      Serial.println("Communication error");
+      Serial.println("Matching - Communication error");
+      pulseLED(3,"r");
       return p;
     case FINGERPRINT_FEATUREFAIL:
-      Serial.println("Could not find fingerprint features");
+      Serial.println("Matching - Could not find fingerprint features");
+      pulseLED(3,"r");
       return p;
     case FINGERPRINT_INVALIDIMAGE:
-      Serial.println("Could not find fingerprint features");
+      Serial.println("Matching - Could not find fingerprint features");
+      pulseLED(3,"r");
       return p;
     default:
-      Serial.println("Unknown error");
+      Serial.println("Matching - Unknown error");
+      pulseLED(3,"r");
       return p;
   }
-
+  setLED(true,"y");
   // OK converted!
   p = finger.fingerSearch();
   if (p == FINGERPRINT_OK) {
-    Serial.println("Found a print match!");
+    Serial.println("Matching - Found a print match!");
   } else if (p == FINGERPRINT_PACKETRECIEVEERR) {
-    Serial.println("Communication error");
+    Serial.println("Matching - Communication error");
+    pulseLED(3,"r");
     return p;
   } else if (p == FINGERPRINT_NOTFOUND) {
-    Serial.println("Did not find a match");
+    Serial.println("Matching - Did not find a match");
+    pulseLED(3,"r");
     return p;
   } else {
-    Serial.println("Unknown error");
+    Serial.println("Matching - Unknown error");
+    pulseLED(3,"r");
     return p;
   }
 
   // found a match!
-  Serial.print("Found ID #"); Serial.print(finger.fingerID);
+  Serial.print("Matching - Found ID #"); Serial.print(finger.fingerID);
   Serial.print(" with confidence of "); Serial.println(finger.confidence);
-
+  pulseLED(4,"b");
+  setLED(true,"y");
   return finger.fingerID;
 }
 
@@ -753,8 +845,8 @@ uint8_t getFingerprintIDez() {
 void startAdv(void)
 {
   // Central advertising packet
-  Bluefruit.Central.setConnectCallback(pher_connect_callback);
-  Bluefruit.Central.setDisconnectCallback(pher_disconnect_callback);
+  Bluefruit.Periph.setConnectCallback(pher_connect_callback);
+  Bluefruit.Periph.setDisconnectCallback(pher_disconnect_callback);
 
   // Advertising packet
   Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
@@ -794,6 +886,15 @@ void setLED(bool on, String clr)
       case 'y': // Yellow
         c = neopixel.Color(on ? 0x20 : 0x00, on ? 0x20 : 0x00, 0x00);
         break;
+      case 'r': // red
+        c = neopixel.Color(on ? 0x20 : 0x00, on ? 0x00: 0x00, 0x00);
+        break;
+      case 'g': // green
+        c = neopixel.Color(0x00 , 0x20, on ? 0x00: 0x00, 0x00);
+        break;
+      case 'w': // white
+        c = neopixel.Color(0x20 , 0x20, on ? 0x20: 0x00, 0x00);
+        break;
       default: // Default to blue for unsupported colors
         c = neopixel.Color(0x00, 0x00, on ? 0x20 : 0x00);
         break;
@@ -819,7 +920,7 @@ void pulseLED(int times, String color)
     // delay(250);
     digitalWrite(pulse_pin, HIGH);
     setLED(true,color);
-    delay(1000);
+    delay(1500);
     digitalWrite(pulse_pin, LOW);
     delay(400);
     setLED(false,color);
@@ -849,8 +950,6 @@ void switchMachine(int on)
   
 }
 
-
-
 void loop()
 {
   //testing the characterlink by switching the relay on and off on pheripheral
@@ -862,35 +961,49 @@ void loop()
   //bio stuff
   Serial.println("Looking for fingerprint sensor!");
   if (finger.verifyPassword()) {
-    Serial.println("Found fingerprint sensor!");
-    Serial.println(F("Reading sensor parameters"));
+  Serial.println("Found fingerprint sensor!");
+  Serial.println(F("Reading sensor parameters"));
   finger.getParameters();
   Serial.print(F("Status: 0x")); Serial.println(finger.status_reg, HEX);
   Serial.print(F("Sys ID: 0x")); Serial.println(finger.system_id, HEX);
   Serial.print(F("Capacity: ")); Serial.println(finger.capacity);
   Serial.print(F("Security level: ")); Serial.println(finger.security_level);
   Serial.print(F("Device address: ")); Serial.println(finger.device_addr, HEX);
-  Serial.print(F("Packet len: ")); Serial.println(finger.packet_len);
-  Serial.print(F("Baud rate: ")); Serial.println(finger.baud_rate);
+  //Serial.print(F("Packet len: ")); Serial.println(finger.packet_len);
+  //Serial.print(F("Baud rate: ")); Serial.println(finger.baud_rate);
 
   finger.getTemplateCount();
 
   if (finger.templateCount == 0) {
     Serial.print("Sensor doesn't contain any fingerprint data. Please run the 'enroll' example.");
-    pulseLED(2,"r");
+    pulseLED(5,"r");
   }
   else {
     Serial.println("Waiting for valid finger...");
       Serial.print("Sensor contains "); Serial.print(finger.templateCount); Serial.println(" templates");
-      pulseLED(2,"g");
-  }
+      //float wait_for_finger = millis();
+      //while(wait_for_finger + 10000 > millis()) {
+        setLED(true,"y");
+        int id = getFingerprintIDez();
+        //pulseLED(2,"y");
+      //id = getFingerprintIDez(); 
+      //Serial.print("ID: "); Serial.println(id);
+        delay(1000);
+        //pulseLED(5,"g");
+        if (id >= 0) {
+          Serial.print("Found ID qty"); Serial.print(id+1);
+          Serial.print("------------------------------------\n\n");
+          //downloadFingerprintTemplate(id);
+        }
+    }
   } else {
-    Serial.println("Did not find fingerprint sensor :( \n");
+    Serial.println("Did not find fingerprint sensor :( \n------------------------------------\n\n");
   }
 
   if(enrollment_mode) {
     Serial.println("Enrollment mode");
-    int id = getFingerprintIDez();
+    //int id = getFingerprintIDez();
+    int id = getFingerprintEnroll();
     if (id >= 0) {
       Serial.print("Found ID #"); Serial.print(id);
       Serial.print("\n");
@@ -899,29 +1012,15 @@ void loop()
   }
   else {
     Serial.println("Normal mode");
-    int id = getFingerprintIDez();
-    if (id >= 0) {
-      Serial.print("Found ID #"); Serial.print(id);
-      Serial.print("\n");
-      downloadFingerprintTemplate(id);
-    }
+    setLED(true,"y");
+    // int id = getFingerprintIDez();
+    // if (id >= 0) {
+    //    Serial.print("Found ID #"); Serial.print(id);
+    //    Serial.print("\n");
+    // //   downloadFingerprintTemplate(id);
+    //  }
   }
 
-
-
-
-  // First check if we are connected to any peripherals
-  // if ( Bluefruit.Central.connected() )
-  // {
-  //   // default MTU with an extra byte for string terminator
-  //   char buf[20+1] = { 0 };
-    
-  //   // Read from HW Serial (normally USB Serial) and send to all peripherals
-  //   if ( Serial.readBytes(buf, sizeof(buf)-1) )
-  //   {
-  //     sendAll(buf);
-  //   }
-  // }
 
   //now low and high level notifications
   // uint8_t newState_low_lvl = (BUTTON_ACTIVE == digitalRead(low_lvl_pin));
@@ -1182,18 +1281,38 @@ void connect_callback(uint16_t conn_handle)
 
     return;
   } 
-  Serial.println("Service Found");
+  Serial.println("Service Found!");
 
   // Once service is found, we continue to discover the primary characteristic
-  Serial.print("Discovering Characteristic ... ");
+  Serial.print("Discovering Switch Characteristic ... ");
   if ( !tag_chr_switch.discover() )
   {
     // Measurement chr is mandatory, if it is not found (valid), then disconnect
-    Serial.println("No Characteristic Found. Characteristic is mandatory but not found. ");
+    Serial.println("No Switch Characteristic Found. Characteristic is mandatory but not found. ");
     Bluefruit.disconnect(conn_handle);
     return;
   }
-  Serial.println("Characteristic Found");
+  Serial.println("Switch Characteristic Found");
+
+  // Once switch char is found, we continue to discover the button characteristic
+  Serial.print("Discovering Button Characteristic ... ");
+  if ( !tag_chr_button.discover() )
+  {
+    // Measurement chr is mandatory, if it is not found (valid), then disconnect
+    Serial.println("No Button Characteristic Found. Characteristic is mandatory but not found. ");
+    Bluefruit.disconnect(conn_handle);
+    return;
+  }
+  Serial.println("Button Characteristic Found");
+
+  Serial.print("Enabling Notify on the Characteristic ... ");
+  if ( tag_chr_button.enableNotify() )
+  {
+    Serial.println("enableNotify success, now ready to receive Characteristic values");
+  }else
+  {
+    Serial.println("Couldn't enable notify for Characteristic. Increase DEBUG LEVEL for troubleshooting");
+  }
  
   // Data Collection Charactistic. Find and enable. 
   // You enable data collection on the Characteristic before the peripheral will start measuring values.
@@ -1375,6 +1494,22 @@ void disconnect_callback(uint16_t conn_handle, uint8_t reason)
   Bluefruit.Scanner.resume();
 }
 
+void notify_callback(BLEClientCharacteristic* chr, uint8_t* data, uint16_t len)
+{ 
+  Serial.print("****Received data: "); 
+  uint16_t tData = (uint16_t) ( ( data[0] & 0xFF ) | ( data[1] & 0xFF ) << 8 );
+  Serial.println(tData);
+  Serial.print("****Setting to enrollement mode.. \n"); 
+  enrollment_mode = true;
+  Serial.println();
+  while(enrollment_mode) {
+    int enrollement_result = getFingerprintEnroll();
+    Serial.println(enrollement_result);
+    enrollment_mode = false;
+    }
+  
+} 
+
 /**
  * Callback invoked when BLE UART data is received
  * @param uart_svc Reference object to the service where the data 
@@ -1397,11 +1532,13 @@ void pher_connect_callback(uint16_t conn_handle)
   //now set the fingerprintscanner in enrollment mode
   enrollment_mode = true;
   setLED(true,"y");
-  while (1) {
+  //while (1) {
+    int enrollement_result = getFingerprintEnroll();
+    Serial.println(enrollement_result);
     if (getFingerprintEnroll() == FINGERPRINT_OK || !enrollment_mode ) {
-      Bluefruit.disconnect(conn_handle);
-      break;
-    }
+      //Bluefruit.disconnect(conn_handle);
+      //break;
+    //}
   }
   
   //(void) conn_handle;
